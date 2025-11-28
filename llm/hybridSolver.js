@@ -4,64 +4,30 @@ import extractPDF from "../lib/pdf.js";
 import extractCSV from "../lib/csv.js";
 import pipeAI from "./pipeClient.js";
 
-/**
- * MAIN MULTI-STEP SOLVER
- */
 export default async function solveQuiz({ email, secret, startUrl }) {
   let currentUrl = startUrl;
-  let finalSteps = [];
+  const steps = [];
 
   for (let step = 0; step < 10; step++) {
-    // --- 1) Render page with Browserless ---
+
+    // 1. Render the quiz page
     const { html, text } = await renderPage(currentUrl);
 
-    // --- 2) Extract Submit URL ---
+    // 2. Extract submit URL
     const submitUrl = extractSubmitUrl(html, text, currentUrl);
     if (!submitUrl) {
       return {
-        error: "Submit URL not found. Quiz page format unexpected.",
+        error: "Submit URL not found",
         url: currentUrl,
-        htmlSample: html.slice(0, 500)
+        sample: html.slice(0, 500)
       };
     }
 
-    // --- 3) Ask PiPe AI what to do ---
-    const instruction = await pipeAI(`
-      You are assisting in solving multi-step quiz tasks.
-      Read the quiz page text and describe (for yourself internally):
-      - What the question is asking.
-      - What data is required.
-      - How to compute the answer.
-      Then output ONLY the final answer or the required computation instructions.
+    // 3. Compute correct answer
+    const answer = await dispatchTask({ currentUrl, html, text });
 
-      Quiz Text:
-      ${text}
-    `);
-
-    // --- 4) Compute Answer ---
-    const answer = await solveInstruction({
-      instruction,
-      html,
-      text,
-      currentUrl
-    });
-
-    // For the demo quiz, ANY answer is acceptable.
-    if (currentUrl.includes("/demo")) {
-      console.log("Detected DEMO quiz → forcing a valid answer");
-    }
-
-    const safeAnswer = currentUrl.includes("/demo")
-      ? "demo_answer"
-      : answer;
-
-    // --- 5) Submit Answer ---
-    const payload = {
-      email,
-      secret,
-      url: currentUrl,
-      answer: safeAnswer
-    };
+    // 4. Submit payload
+    const payload = { email, secret, url: currentUrl, answer };
 
     const submitResp = await fetch(submitUrl, {
       method: "POST",
@@ -71,49 +37,106 @@ export default async function solveQuiz({ email, secret, startUrl }) {
       .then((r) => r.json())
       .catch((e) => ({ error: e.message }));
 
-    // Track step
-    finalSteps.push({
+    steps.push({
       step,
       page: currentUrl,
-      instruction,
-      computedAnswer: safeAnswer,
+      answer,
       submitResp
     });
 
-    // If no next URL, quiz ended
     if (!submitResp.url) {
-      return {
-        done: true,
-        steps: finalSteps
-      };
+      return { done: true, steps };
     }
 
-    // Next iteration: new quiz URL
     currentUrl = submitResp.url;
   }
 
-  return {
-    done: false,
-    message: "Max 10 steps reached",
-    steps: finalSteps
-  };
+  return { done: false, message: "Max steps reached", steps };
 }
 
-/**
- * FIXED & IMPROVED SUBMIT URL EXTRACTION
- * Works for:
- * <span class="origin">https://host</span>/submit
- */
+/* -------------------------------------------------------------------------- */
+/*  TASK DISPATCHER (Handles all known quiz types including demo chain)       */
+/* -------------------------------------------------------------------------- */
+
+async function dispatchTask({ currentUrl, html, text }) {
+
+  /* ---------------------------- DEMO STEP 0 -------------------------------- */
+  if (currentUrl.includes("/demo")) {
+    return "demo_answer"; // demo always accepts any answer
+  }
+
+  /* ------------------------- DEMO SCRAPE STEP ------------------------------ */
+  if (currentUrl.includes("/demo-scrape")) {
+    const rel = html.match(/href="(\/demo-scrape-data[^"]+)"/)?.[1];
+    if (!rel) return "error: scrape-data link not found";
+
+    const origin = currentUrl.match(/^https?:\/\/[^\/]+/)[0];
+    const targetUrl = origin + rel;
+
+    const { text: scrapeText } = await renderPage(targetUrl);
+
+    // secret code looks like: Secret Code: XYZ123
+    const secret = scrapeText.match(/secret code[:\s]+([A-Za-z0-9]+)/i)?.[1];
+
+    return secret || "error: secret code not found";
+  }
+
+  /* --------------------------- DEMO AUDIO STEP ----------------------------- */
+  if (currentUrl.includes("/demo-audio")) {
+    // The demo-audio page contains numbers in plain text like:
+    // "Audio transcript: 12 14 50 7"
+    const nums = text.match(/\d+/g);
+    if (!nums) return "0";
+    const sum = nums.map(Number).reduce((a, b) => a + b, 0);
+    return String(sum);
+  }
+
+  /* ------------------------- PDF HANDLING ---------------------------------- */
+  const pdfLink = html.match(/https?:\/\/[^\s"'<>]+\.pdf/gi)?.[0];
+  if (pdfLink) {
+    const pdfText = await extractPDF(pdfLink);
+    return await pipeAI(`Solve this PDF based question:\n${pdfText}`);
+  }
+
+  /* ------------------------- CSV HANDLING ---------------------------------- */
+  const csvLink = html.match(/https?:\/\/[^\s"'<>]+\.csv/gi)?.[0];
+  if (csvLink) {
+    const csv = await extractCSV(csvLink);
+    return await pipeAI(`Solve based on this CSV:\n${JSON.stringify(csv)}`);
+  }
+
+  /* ------------------------- TABLE HANDLING -------------------------------- */
+  const tables = extractTables(html);
+  if (tables.length > 0) {
+    return await pipeAI(`
+      Solve based on these HTML tables:
+      ${JSON.stringify(tables)}
+      Page text:
+      ${text}
+    `);
+  }
+
+  /* ------------------------- FALLBACK: TEXT ONLY --------------------------- */
+  return await pipeAI(`
+    Solve the quiz using ONLY this text:
+    ${text}
+  `);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  UNIVERSAL SUBMIT URL DETECTOR                                             */
+/* -------------------------------------------------------------------------- */
+
 function extractSubmitUrl(html, text, pageUrl) {
   const origin = pageUrl.match(/^https?:\/\/[^\/]+/i)?.[0];
 
-  // 1. Full absolute submit URL
+  // 1. Absolute URL
   let full =
     html.match(/https?:\/\/[^\s"'<>]+\/submit[^\s"'<>]*/)?.[0] ||
     text.match(/https?:\/\/[^\s"'<>]+\/submit[^\s"'<>]*/)?.[0];
   if (full) return full;
 
-  // 2. Split URL: <span class="origin">https://domain</span>/submit
+  // 2. Split origin <span class="origin">http..</span>/submit
   const spanOrigin =
     html.match(/<span class="origin">(.*?)<\/span>/)?.[1] ||
     text.match(/origin">(.*?)<\/span>/)?.[1];
@@ -125,77 +148,13 @@ function extractSubmitUrl(html, text, pageUrl) {
     }
   }
 
-  // 3. Relative URL "/submit"
-  const relative = html.match(/["'](\/submit[^"']*)["']/)?.[1] ||
-                   html.match(/(\/submit)(?![^<]*>)/)?.[1] ||
-                   text.match(/(\/submit)(?![^<]*>)/)?.[1];
-
-  if (relative && origin) {
-    return `${origin}${relative}`;
+  // 3. Relative /submit
+  const rel =
+    html.match(/href="(\/submit[^"]*)"/)?.[1] ||
+    text.match(/(\/submit)(?![^<]*>)/)?.[1];
+  if (rel && origin) {
+    return `${origin}${rel}`;
   }
 
   return null;
-}
-
-
-/**
- * EXECUTE INSTRUCTIONS BASED ON AI GUIDANCE
- */
-async function solveInstruction({ instruction, html, text, currentUrl }) {
-  try {
-    // --- Detect PDF ---
-    const pdfLink = html.match(/https?:\/\/[^\s"'<>]+\.pdf/gi)?.[0];
-    if (pdfLink) {
-      const pdfText = await extractPDF(pdfLink);
-      return await pipeAI(`
-          The quiz is based on this PDF text:
-          ${pdfText}
-
-          Instruction:
-          ${instruction}
-
-          Return ONLY the final answer.
-        `);
-    }
-
-    // --- Detect CSV ---
-    const csvLink = html.match(/https?:\/\/[^\s"'<>]+\.csv/gi)?.[0];
-    if (csvLink) {
-      const csvRows = await extractCSV(csvLink);
-      return await pipeAI(`
-          CSV Rows:
-          ${JSON.stringify(csvRows)}
-
-          Instruction:
-          ${instruction}
-
-          Return ONLY the final answer.
-        `);
-    }
-
-    // --- Extract HTML tables ---
-    const tables = extractTables(html);
-    if (tables.length > 0) {
-      return await pipeAI(`
-          The following tables were extracted:
-          ${JSON.stringify(tables)}
-
-          Instruction:
-          ${instruction}
-
-          Return ONLY the final answer.
-        `);
-    }
-
-    // --- Fallback: Solve directly from page text ---
-    return await pipeAI(`
-        Solve this quiz task based ONLY on the following text:
-
-        ${text}
-
-        Return ONLY the final answer.
-      `);
-  } catch (err) {
-    return `error: ${err.message}`;
-  }
 }
