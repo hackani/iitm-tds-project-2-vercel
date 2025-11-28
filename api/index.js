@@ -1,29 +1,51 @@
-export default async function handler(req, res) {
+export const config = {
+  runtime: "edge"
+};
+
+export default async function handler(req) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Only POST allowed" });
+    return new Response(JSON.stringify({ error: "Only POST allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
-  // SAFELY PARSE JSON BODY -- REQUIRED ON VERCEL
   let body;
   try {
-    body = await req.json();   // <-- This MUST work
+    body = await req.json(); // works in EDGE runtime
   } catch (err) {
-    return res.status(400).json({ error: "Invalid JSON" });
+    return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
   const { email, secret, url } = body || {};
 
   if (!email || !secret || !url) {
-    return res.status(400).json({ error: "Missing fields" });
+    return new Response(JSON.stringify({ error: "Missing fields" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
   if (secret !== process.env.QUIZ_SECRET) {
-    return res.status(403).json({ error: "Invalid secret" });
+    return new Response(JSON.stringify({ error: "Invalid secret" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" }
+    });
   }
 
-  return res.status(200).json({
-    ok: true,
-    email,
-    url
-  });
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      email,
+      url,
+      message: "Edge Function JSON OK!"
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }
+  );
 }
