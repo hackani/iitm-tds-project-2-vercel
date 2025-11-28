@@ -1,0 +1,26 @@
+{
+  "name": "vercel-quiz-solver",
+  "version": "1.0.0",
+  "description": "This project is a serverless quiz solver designed for the  \r **TDS LLM Analysis Quiz**.",
+  "homepage": "https://github.com/hackani/iitm-tds-project-2-vercel#readme",
+  "bugs": {
+    "url": "https://github.com/hackani/iitm-tds-project-2-vercel/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hackani/iitm-tds-project-2-vercel.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.4.394"
+  }
+}
