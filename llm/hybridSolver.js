@@ -16,7 +16,7 @@ export default async function solveQuiz({ email, secret, startUrl }) {
     const { html, text } = await renderPage(currentUrl);
 
     // --- 2) Extract Submit URL ---
-    const submitUrl = extractSubmitUrl(html, text);
+    const submitUrl = extractSubmitUrl(html, text, currentUrl);
     if (!submitUrl) {
       return {
         error: "Submit URL not found. Quiz page format unexpected.",
@@ -104,38 +104,39 @@ export default async function solveQuiz({ email, secret, startUrl }) {
  * Works for:
  * <span class="origin">https://host</span>/submit
  */
-function extractSubmitUrl(html, text) {
-  // 1. Try straight match first
-  let fullUrl =
+function extractSubmitUrl(html, text, pageUrl) {
+  const origin = pageUrl.match(/^https?:\/\/[^\/]+/i)?.[0];
+
+  // 1. Full absolute submit URL
+  let full =
     html.match(/https?:\/\/[^\s"'<>]+\/submit[^\s"'<>]*/)?.[0] ||
     text.match(/https?:\/\/[^\s"'<>]+\/submit[^\s"'<>]*/)?.[0];
+  if (full) return full;
 
-  if (fullUrl) return fullUrl;
-
-  // 2. Handle split URL:
-  //    <span class="origin">https://domain</span>/submit
-  const originRaw =
+  // 2. Split URL: <span class="origin">https://domain</span>/submit
+  const spanOrigin =
     html.match(/<span class="origin">(.*?)<\/span>/)?.[1] ||
     text.match(/origin">(.*?)<\/span>/)?.[1];
 
-  if (originRaw) {
-    const origin = originRaw.replace(/<[^>]+>/g, "").trim();
-
-    // If HTML contains "</span>/submit"
+  if (spanOrigin) {
+    const cleanOrigin = spanOrigin.replace(/<[^>]+>/g, "").trim();
     if (html.includes(`</span>/submit`) || text.includes(`/submit`)) {
-      return `${origin}/submit`;
+      return `${cleanOrigin}/submit`;
     }
   }
 
-  // 3. Fallback: find "/submit"
-  const submitOnly = html.match(/\/submit[^\s"'<>]*/)?.[0];
-  if (submitOnly && originRaw) {
-    const origin = originRaw.replace(/<[^>]+>/g, "").trim();
-    return `${origin}${submitOnly}`;
+  // 3. Relative URL "/submit"
+  const relative = html.match(/["'](\/submit[^"']*)["']/)?.[1] ||
+                   html.match(/(\/submit)(?![^<]*>)/)?.[1] ||
+                   text.match(/(\/submit)(?![^<]*>)/)?.[1];
+
+  if (relative && origin) {
+    return `${origin}${relative}`;
   }
 
-  return null; // Could not find
+  return null;
 }
+
 
 /**
  * EXECUTE INSTRUCTIONS BASED ON AI GUIDANCE
